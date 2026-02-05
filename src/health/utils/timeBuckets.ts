@@ -31,13 +31,13 @@ export const toLocalISOString = (date: Date): string => {
 };
 
 export const getDayBoundaries = () => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
-    
-    return { start, end };
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
 };
 
 export const createEmptyHourlyBuckets = (): HourlyHealthPayload[] => {
@@ -48,7 +48,7 @@ export const createEmptyHourlyBuckets = (): HourlyHealthPayload[] => {
   for (let i = 0; i < 24; i++) {
     const startDate = new Date(baseDate);
     startDate.setHours(i, 0, 0, 0);
-    
+
     const endDate = new Date(baseDate);
     endDate.setHours(i, 59, 59, 999);
 
@@ -62,7 +62,7 @@ export const createEmptyHourlyBuckets = (): HourlyHealthPayload[] => {
       endDate: toLocalISOString(endDate),
     });
   }
-  
+
   return buckets;
 };
 

@@ -3,32 +3,16 @@ import HealthKit, {
   QuantitySample
 } from '@kingstinct/react-native-healthkit';
 import { HealthProvider, HealthState, DashboardMetrics, HourlyHealthPayload } from '../models';
-import { createEmptyHourlyBuckets, getBucketIndex, getDayBoundaries } from '../utils/timeBuckets';
-
-interface IngestionRecord {
-  type: string;
-  time: string;
-  value: number;
-  origin: string;
-  trusted: boolean;
-  rejectionReason?: string;
-  rawMetadata?: string;
-}
-
-interface HourlyDetail {
-  hourIndex: number;
-  activeCalories: number;
-  activeCaloriesSource: "activeRecord" | "none";
-  isEstimated: boolean;
-}
+import { createEmptyHourlyBuckets, getDayBoundaries } from '../utils/timeBuckets';
+import {
+  IngestionRecord,
+  HourlyDetail,
+  ProviderDebugState
+} from './ios/types';
+import { distributeSample } from './ios/utils';
 
 export class IosHealthKitProvider implements HealthProvider {
-  private debugData: {
-    hourly: HourlyDetail[];
-    stats: { read: number; accepted: number; rejectedManual: number };
-    auditLog: IngestionRecord[];
-  } | null = null;
-
+  private debugData: ProviderDebugState | null = null;
   private bypassManualFilter: boolean = false;
 
   async ensurePermissions(): Promise<HealthState> {
@@ -145,39 +129,11 @@ export class IosHealthKitProvider implements HealthProvider {
 
       if (trusted) {
         stats.accepted++;
-        this.distributeSample(sample, buckets, dayStart, value, bucketKey, onBucketTouch);
+        distributeSample(sample, buckets, dayStart, value, bucketKey, onBucketTouch);
       } else {
         stats.rejectedManual++;
       }
     });
-  }
-
-  private distributeSample(
-    sample: QuantitySample,
-    buckets: HourlyHealthPayload[],
-    dayStart: Date,
-    totalValue: number,
-    bucketKey: keyof HourlyHealthPayload,
-    onBucketTouch?: (idx: number) => void
-  ) {
-    const rStart = sample.startDate.getTime();
-    const rEnd = sample.endDate.getTime();
-    const duration = Math.max(rEnd - rStart, 1);
-
-    for (let i = 0; i < 24; i++) {
-      const bStart = dayStart.getTime() + i * 3600000;
-      const bEnd = bStart + 3600000;
-      const overlap = Math.max(0, Math.min(rEnd, bEnd) - Math.max(rStart, bStart));
-
-      if (overlap > 0) {
-        const portion = totalValue * (overlap / duration);
-        (buckets[i] as any)[bucketKey] += portion;
-        if (onBucketTouch) onBucketTouch(i);
-        if (bucketKey === 'activeCalories') {
-          (buckets[i] as any).activeCalories += 0; // ensure type safety
-        }
-      }
-    }
   }
 
   // --- Debug Interface ---
@@ -195,3 +151,4 @@ export class IosHealthKitProvider implements HealthProvider {
   getIngestionAuditLog(): IngestionRecord[] { return this.debugData?.auditLog || []; }
   setBypassManualFilter(bypass: boolean) { this.bypassManualFilter = bypass; }
 }
+

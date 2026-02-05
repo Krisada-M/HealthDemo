@@ -4,7 +4,7 @@ const { CheckPackageInstallation } = NativeModules;
 
 export const isPackageInstalled = async (packageName: string): Promise<boolean> => {
   if (Platform.OS !== 'android') return false;
-  
+
   return new Promise((resolve) => {
     try {
       CheckPackageInstallation.isPackageInstalled(packageName, (installed: boolean) => {
@@ -20,7 +20,7 @@ export const isPackageInstalled = async (packageName: string): Promise<boolean> 
 export const openPlayStore = async (packageName: string) => {
   const marketUrl = `market://details?id=${packageName}`;
   const webUrl = `https://play.google.com/store/apps/details?id=${packageName}`;
-  
+
   try {
     const supported = await Linking.canOpenURL(marketUrl);
     if (supported) {
@@ -28,7 +28,7 @@ export const openPlayStore = async (packageName: string) => {
     } else {
       await Linking.openURL(webUrl);
     }
-  } catch (err) {
+  } catch {
     await Linking.openURL(webUrl);
   }
 };

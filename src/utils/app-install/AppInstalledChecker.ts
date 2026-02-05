@@ -10,7 +10,7 @@ export const AppInstalledChecker = {
 
   async isAnyHealthAppInstalled(): Promise<boolean> {
     if (Platform.OS !== 'android') return true;
-    
+
     const packages = Object.keys(APP_LIST);
     for (const pkg of packages) {
       if (await isPackageInstalled(pkg)) {

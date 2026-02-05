@@ -5,50 +5,19 @@ import {
   getGrantedPermissions
 } from 'react-native-health-connect';
 import { HealthProvider, HealthState, DashboardMetrics, HourlyHealthPayload } from '../models';
-import { createEmptyHourlyBuckets, getBucketIndex, getDayBoundaries } from '../utils/timeBuckets';
+import { createEmptyHourlyBuckets, getDayBoundaries } from '../utils/timeBuckets';
 import { validateRecord, RejectionReason } from '../utils/trustedSourcePolicy';
-
-type ActiveCaloriesSource = "activeRecord" | "totalMinusBasal" | "none";
-
-interface IngestionRecord {
-  type: string;
-  time: string;
-  value: number;
-  origin: string;
-  trusted: boolean;
-  recordingMethod?: number;
-  rejectionReason?: string;
-  rawMetadata?: string;
-  device?: string;
-}
-
-interface HourlyDetail {
-  hourIndex: number;
-  activeCalories: number;
-  activeCaloriesSource: ActiveCaloriesSource;
-  isEstimated: boolean;
-  hasActiveRecord: boolean; // Flag to prevent Tier-2 override
-  totalCalories?: number;
-  basalUsed?: number;
-}
-
-interface FilteringStats {
-  recordsRead: number;
-  recordsAccepted: number;
-  perType: { [key: string]: { read: number; accepted: number } };
-  rejectedByReason: { [key in RejectionReason]?: number };
-}
-
-interface ProviderDebugState {
-  hourly: HourlyDetail[];
-  sumActiveFromTier1: number;
-  sumEstimatedFromTier2: number;
-  sumTotalCalories: number;
-  sumBasalUsed: number;
-  avgBmrKcalDay: number;
-  stats: FilteringStats;
-  auditLog: IngestionRecord[];
-}
+import {
+  IngestionRecord,
+  HourlyDetail,
+  FilteringStats,
+  ProviderDebugState
+} from './android/types';
+import {
+  extractValue,
+  calculateAverageBmr,
+  distributeRecordAcrossBuckets
+} from './android/utils';
 
 export class AndroidHealthConnectProvider implements HealthProvider {
   private debugData: ProviderDebugState | null = null;
@@ -129,7 +98,7 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     };
 
     // 4. BMR
-    const avgBmrKcalDay = this.calculateAverageBmr(trusted.bmr);
+    const avgBmrKcalDay = calculateAverageBmr(trusted.bmr);
 
     // 5. Populate Buckets with Overlap Distribution
     this.populateMetricsIntoBuckets(buckets, hourlyDetails, trusted);
@@ -196,7 +165,7 @@ export class AndroidHealthConnectProvider implements HealthProvider {
         }
       }
 
-      const value = this.extractValue(r);
+      const value = extractValue(r);
 
       auditLog.push({
         type: typeName,
@@ -222,80 +191,27 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     });
   }
 
-  private extractValue(r: any): number {
-    if (r.count) return r.count;
-    if (r.energy?.inKilocalories) return r.energy.inKilocalories;
-    if (r.distance?.inMeters) return r.distance.inMeters;
-    if (r.basalMetabolicRate?.inKilocaloriesPerDay) return r.basalMetabolicRate.inKilocaloriesPerDay;
-    return 0;
-  }
-
-  private calculateAverageBmr(trustedBmr: any[]): number {
-    if (trustedBmr.length === 0) return 0;
-    const sum = trustedBmr.reduce((acc, r) => acc + r.basalMetabolicRate.inKilocaloriesPerDay, 0);
-    return sum / trustedBmr.length;
-  }
-
   private populateMetricsIntoBuckets(buckets: HourlyHealthPayload[], details: HourlyDetail[], trusted: any) {
     const { start: dayStart } = getDayBoundaries();
 
     // Steps
     trusted.steps.forEach((r: any) => {
-      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.count, 'steps');
+      distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.count, 'steps');
     });
 
     // Distance
     trusted.distance.forEach((r: any) => {
-      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.distance.inMeters, 'distance');
+      distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.distance.inMeters, 'distance');
     });
 
     // Active Calories
     trusted.active.forEach((r: any) => {
-      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.energy.inKilocalories, 'activeCalories', (idx) => {
+      distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.energy.inKilocalories, 'activeCalories', (idx) => {
         details[idx].activeCaloriesSource = "activeRecord";
         details[idx].isEstimated = false;
         details[idx].hasActiveRecord = true;
       });
     });
-  }
-
-  /**
-   * Distributes a record's value across hourly buckets based on time overlap.
-   */
-  private distributeRecordAcrossBuckets(
-    record: any,
-    buckets: HourlyHealthPayload[],
-    dayStart: Date,
-    valueExtractor: (r: any) => number,
-    bucketKey: keyof HourlyHealthPayload,
-    onBucketTouch?: (idx: number) => void
-  ) {
-    const startStr = record.startTime || record.time;
-    const endStr = record.endTime || record.startTime || record.time;
-
-    const rStart = new Date(startStr).getTime();
-    const rEnd = new Date(endStr).getTime();
-    const totalValue = valueExtractor(record);
-
-    if (isNaN(rStart) || isNaN(rEnd)) return;
-
-    const duration = Math.max(rEnd - rStart, 1); // min 1ms to avoid div by zero
-
-    for (let i = 0; i < 24; i++) {
-      const bStart = dayStart.getTime() + i * 3600000;
-      const bEnd = bStart + 3600000;
-
-      const overlapStart = Math.max(rStart, bStart);
-      const overlapEnd = Math.min(rEnd, bEnd);
-      const overlapDuration = Math.max(0, overlapEnd - overlapStart);
-
-      if (overlapDuration > 0) {
-        const ratio = overlapDuration / duration;
-        const portion = totalValue * ratio;
-        (buckets[i] as any)[bucketKey] += portion;
-        if (onBucketTouch) onBucketTouch(i);
-      }
-    }
   }
 
   private applyFallbacks(buckets: HourlyHealthPayload[], details: HourlyDetail[], trustedTotal: any[], avgBmr: number) {
@@ -400,3 +316,4 @@ export class AndroidHealthConnectProvider implements HealthProvider {
   getIngestionAuditLog(): IngestionRecord[] { return this.debugData?.auditLog || []; }
   setBypassManualFilter(bypass: boolean) { this.bypassManualFilter = bypass; }
 }
+
