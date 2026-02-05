@@ -50,5 +50,9 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>We need access to your health data to show your activity levels.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>We need access to your health data to show your activity levels.</string>
 </dict>
 </plist>

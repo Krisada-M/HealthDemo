@@ -1,0 +1,402 @@
+import {
+  initialize,
+  requestPermission,
+  readRecords,
+  getGrantedPermissions
+} from 'react-native-health-connect';
+import { HealthProvider, HealthState, DashboardMetrics, HourlyHealthPayload } from '../models';
+import { createEmptyHourlyBuckets, getBucketIndex, getDayBoundaries } from '../utils/timeBuckets';
+import { validateRecord, RejectionReason } from '../utils/trustedSourcePolicy';
+
+type ActiveCaloriesSource = "activeRecord" | "totalMinusBasal" | "none";
+
+interface IngestionRecord {
+  type: string;
+  time: string;
+  value: number;
+  origin: string;
+  trusted: boolean;
+  recordingMethod?: number;
+  rejectionReason?: string;
+  rawMetadata?: string;
+  device?: string;
+}
+
+interface HourlyDetail {
+  hourIndex: number;
+  activeCalories: number;
+  activeCaloriesSource: ActiveCaloriesSource;
+  isEstimated: boolean;
+  hasActiveRecord: boolean; // Flag to prevent Tier-2 override
+  totalCalories?: number;
+  basalUsed?: number;
+}
+
+interface FilteringStats {
+  recordsRead: number;
+  recordsAccepted: number;
+  perType: { [key: string]: { read: number; accepted: number } };
+  rejectedByReason: { [key in RejectionReason]?: number };
+}
+
+interface ProviderDebugState {
+  hourly: HourlyDetail[];
+  sumActiveFromTier1: number;
+  sumEstimatedFromTier2: number;
+  sumTotalCalories: number;
+  sumBasalUsed: number;
+  avgBmrKcalDay: number;
+  stats: FilteringStats;
+  auditLog: IngestionRecord[];
+}
+
+export class AndroidHealthConnectProvider implements HealthProvider {
+  private debugData: ProviderDebugState | null = null;
+  private bypassManualFilter: boolean = false;
+
+  constructor() {
+    this.debugData = null;
+  }
+
+  // --- Public Interface ---
+
+  async ensurePermissions(): Promise<HealthState> {
+    try {
+      if (!(await initialize())) return HealthState.NOT_SUPPORTED;
+
+      const requestedTypes = ['Steps', 'ActiveCaloriesBurned', 'Distance', 'TotalCaloriesBurned', 'BasalMetabolicRate'];
+      const requested = requestedTypes.map(type => ({ accessType: 'read', recordType: type }));
+
+      const granted = await getGrantedPermissions();
+      const missing = requested.filter(req => !granted.some(g => (g as any).recordType === req.recordType));
+
+      if (missing.length > 0) {
+        await requestPermission(requested as any);
+        const finalGranted = await getGrantedPermissions();
+        if (finalGranted.length === 0) return HealthState.NOT_AUTHORIZED;
+      }
+
+      return HealthState.READY;
+    } catch (e) {
+      console.error('Health Connect Auth Error:', e);
+      return HealthState.NOT_AUTHORIZED;
+    }
+  }
+
+  async getDashboardMetrics(): Promise<DashboardMetrics> {
+    const hourly = await this.getTodayHourlyPayload();
+    const totals = hourly.reduce((acc, curr) => ({
+      steps: acc.steps + curr.steps,
+      activeCalories: acc.activeCalories + curr.activeCalories,
+      distance: acc.distance + curr.distance
+    }), { steps: 0, activeCalories: 0, distance: 0 });
+
+    return {
+      steps: totals.steps,
+      activeCaloriesKcal: totals.activeCalories,
+      distanceMeters: totals.distance,
+      lastUpdatedISO: new Date().toISOString(),
+    };
+  }
+
+  async getTodayHourlyPayload(): Promise<HourlyHealthPayload[]> {
+    const { start, end } = getDayBoundaries();
+    const buckets = createEmptyHourlyBuckets();
+
+    // 1. Setup local state
+    const auditLog: IngestionRecord[] = [];
+    const stats: FilteringStats = this.initStats();
+    const hourlyDetails: HourlyDetail[] = buckets.map((_, i) => ({
+      hourIndex: i,
+      activeCalories: 0,
+      activeCaloriesSource: "none",
+      isEstimated: true,
+      hasActiveRecord: false,
+      totalCalories: 0,
+      basalUsed: 0
+    }));
+
+    // 2. Fetch
+    const data = await this.fetchAllData(start, end);
+
+    // 3. Filter and Track
+    const trusted = {
+      steps: this.filterAndTrack(data.steps.records, 'Steps', stats, auditLog),
+      distance: this.filterAndTrack(data.distance.records, 'Distance', stats, auditLog),
+      active: this.filterAndTrack(data.active.records, 'ActiveCal', stats, auditLog),
+      total: this.filterAndTrack(data.total.records, 'TotalCal', stats, auditLog),
+      bmr: this.filterAndTrack(data.bmr.records, 'BMR', stats, auditLog),
+    };
+
+    // 4. BMR
+    const avgBmrKcalDay = this.calculateAverageBmr(trusted.bmr);
+
+    // 5. Populate Buckets with Overlap Distribution
+    this.populateMetricsIntoBuckets(buckets, hourlyDetails, trusted);
+
+    // 6. Apply Mid-tier/Fallbacks
+    const calculationResults = this.applyFallbacks(buckets, hourlyDetails, trusted.total, avgBmrKcalDay);
+
+    // 7. Store debug state
+    this.debugData = {
+      hourly: hourlyDetails,
+      avgBmrKcalDay,
+      stats,
+      auditLog,
+      ...calculationResults
+    };
+
+    return buckets;
+  }
+
+  // --- Private Helpers ---
+
+  private async fetchAllData(start: Date, end: Date) {
+    const timeFilter = { timeRangeFilter: { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() } };
+    const bmrStart = new Date(start.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const bmrFilter = { timeRangeFilter: { operator: 'between', startTime: bmrStart.toISOString(), endTime: end.toISOString() } };
+
+    const [steps, distance, active, total, bmr] = await Promise.all([
+      this.safeRead('Steps', timeFilter),
+      this.safeRead('Distance', timeFilter),
+      this.safeRead('ActiveCaloriesBurned', timeFilter),
+      this.safeRead('TotalCaloriesBurned', timeFilter),
+      this.safeRead('BasalMetabolicRate', bmrFilter),
+    ]);
+
+    return { steps, distance, active, total, bmr };
+  }
+
+  private async safeRead(recordType: any, options: any) {
+    try {
+      return await readRecords(recordType, options);
+    } catch (e) {
+      console.warn(`[HealthConnect] Failed to read ${recordType}:`, e);
+      return { records: [] };
+    }
+  }
+
+  private filterAndTrack<T extends { metadata?: any }>(records: T[], typeName: string, stats: FilteringStats, auditLog: IngestionRecord[]): T[] {
+    stats.recordsRead += records.length;
+    if (!stats.perType[typeName]) stats.perType[typeName] = { read: 0, accepted: 0 };
+    stats.perType[typeName].read += records.length;
+
+    return records.filter(r => {
+      const validation = validateRecord(r, this.bypassManualFilter);
+      const originPackage = r.metadata?.dataOrigin || "unknown"; // Reached limit of specific package extraction
+      const startTimeRaw = (r as any).startTime || (r as any).time;
+
+      let timeLabel = "unknown";
+      if (startTimeRaw) {
+        const d = new Date(startTimeRaw);
+        if (!isNaN(d.getTime())) {
+          timeLabel = d.toLocaleTimeString();
+        } else {
+          timeLabel = `Err: ${startTimeRaw}`;
+        }
+      }
+
+      const value = this.extractValue(r);
+
+      auditLog.push({
+        type: typeName,
+        time: timeLabel,
+        value: Number(value.toFixed(1)),
+        origin: originPackage,
+        trusted: validation.trusted,
+        recordingMethod: r.metadata?.recordingMethod,
+        rejectionReason: validation.trusted ? undefined : validation.reason,
+        rawMetadata: JSON.stringify(r.metadata || {}, null, 2),
+        device: r.metadata?.device ? `${r.metadata.device.manufacturer} ${r.metadata.device.model}` : undefined
+      });
+
+      if (validation.trusted) {
+        stats.recordsAccepted++;
+        stats.perType[typeName].accepted++;
+        return true;
+      } else {
+        const reason = validation.reason as RejectionReason;
+        stats.rejectedByReason[reason] = (stats.rejectedByReason[reason] || 0) + 1;
+        return false;
+      }
+    });
+  }
+
+  private extractValue(r: any): number {
+    if (r.count) return r.count;
+    if (r.energy?.inKilocalories) return r.energy.inKilocalories;
+    if (r.distance?.inMeters) return r.distance.inMeters;
+    if (r.basalMetabolicRate?.inKilocaloriesPerDay) return r.basalMetabolicRate.inKilocaloriesPerDay;
+    return 0;
+  }
+
+  private calculateAverageBmr(trustedBmr: any[]): number {
+    if (trustedBmr.length === 0) return 0;
+    const sum = trustedBmr.reduce((acc, r) => acc + r.basalMetabolicRate.inKilocaloriesPerDay, 0);
+    return sum / trustedBmr.length;
+  }
+
+  private populateMetricsIntoBuckets(buckets: HourlyHealthPayload[], details: HourlyDetail[], trusted: any) {
+    const { start: dayStart } = getDayBoundaries();
+
+    // Steps
+    trusted.steps.forEach((r: any) => {
+      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.count, 'steps');
+    });
+
+    // Distance
+    trusted.distance.forEach((r: any) => {
+      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.distance.inMeters, 'distance');
+    });
+
+    // Active Calories
+    trusted.active.forEach((r: any) => {
+      this.distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.energy.inKilocalories, 'activeCalories', (idx) => {
+        details[idx].activeCaloriesSource = "activeRecord";
+        details[idx].isEstimated = false;
+        details[idx].hasActiveRecord = true;
+      });
+    });
+  }
+
+  /**
+   * Distributes a record's value across hourly buckets based on time overlap.
+   */
+  private distributeRecordAcrossBuckets(
+    record: any,
+    buckets: HourlyHealthPayload[],
+    dayStart: Date,
+    valueExtractor: (r: any) => number,
+    bucketKey: keyof HourlyHealthPayload,
+    onBucketTouch?: (idx: number) => void
+  ) {
+    const startStr = record.startTime || record.time;
+    const endStr = record.endTime || record.startTime || record.time;
+
+    const rStart = new Date(startStr).getTime();
+    const rEnd = new Date(endStr).getTime();
+    const totalValue = valueExtractor(record);
+
+    if (isNaN(rStart) || isNaN(rEnd)) return;
+
+    const duration = Math.max(rEnd - rStart, 1); // min 1ms to avoid div by zero
+
+    for (let i = 0; i < 24; i++) {
+      const bStart = dayStart.getTime() + i * 3600000;
+      const bEnd = bStart + 3600000;
+
+      const overlapStart = Math.max(rStart, bStart);
+      const overlapEnd = Math.min(rEnd, bEnd);
+      const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+
+      if (overlapDuration > 0) {
+        const ratio = overlapDuration / duration;
+        const portion = totalValue * ratio;
+        (buckets[i] as any)[bucketKey] += portion;
+        if (onBucketTouch) onBucketTouch(i);
+      }
+    }
+  }
+
+  private applyFallbacks(buckets: HourlyHealthPayload[], details: HourlyDetail[], trustedTotal: any[], avgBmr: number) {
+    const { start: dayStart } = getDayBoundaries();
+    let sumActiveFromTier1 = 0;
+    let sumEstimatedFromTier2 = 0;
+    let sumTotalCalories = 0;
+    let sumBasalUsed = 0;
+
+    // First distribute Total Calories into details for fallback analysis
+    trustedTotal.forEach((r: any) => {
+      const startStr = r.startTime || r.time;
+      const endStr = r.endTime || r.startTime || r.time;
+      const rStart = new Date(startStr).getTime();
+      const rEnd = new Date(endStr).getTime();
+      const totalVal = r.energy.inKilocalories;
+      const duration = Math.max(rEnd - rStart, 1);
+
+      for (let i = 0; i < 24; i++) {
+        const bStart = dayStart.getTime() + i * 3600000;
+        const bEnd = bStart + 3600000;
+        const overlap = Math.max(0, Math.min(rEnd, bEnd) - Math.max(rStart, bStart));
+        if (overlap > 0) {
+          const portion = totalVal * (overlap / duration);
+          details[i].totalCalories = (details[i].totalCalories || 0) + portion;
+        }
+      }
+    });
+
+    for (let i = 0; i < 24; i++) {
+      const hourTotalCal = details[i].totalCalories || 0;
+      sumTotalCalories += hourTotalCal;
+
+      if (details[i].hasActiveRecord) {
+        // Tier 1: Won't be overridden even if value is 0
+        sumActiveFromTier1 += buckets[i].activeCalories;
+        details[i].activeCalories = buckets[i].activeCalories;
+      } else if (hourTotalCal > 0 && avgBmr > 0) {
+        // Tier 2: Only runs if no Tier 1 record exists
+        const bucketDurationMs = 3600000; // Fixed 1h for now, can be adjusted
+        const basalHour = avgBmr * (bucketDurationMs / 86400000);
+        const activeEst = Math.max(hourTotalCal - basalHour, 0);
+
+        buckets[i].activeCalories = activeEst;
+        details[i].activeCalories = activeEst;
+        details[i].activeCaloriesSource = "totalMinusBasal";
+        details[i].isEstimated = true;
+        details[i].basalUsed = basalHour;
+
+        sumEstimatedFromTier2 += activeEst;
+        sumBasalUsed += basalHour;
+      } else {
+        details[i].activeCalories = 0;
+        details[i].activeCaloriesSource = "none";
+        details[i].isEstimated = true;
+      }
+    }
+
+    return { sumActiveFromTier1, sumEstimatedFromTier2, sumTotalCalories, sumBasalUsed };
+  }
+
+  private initStats(): FilteringStats {
+    const stats: any = {
+      recordsRead: 0,
+      recordsAccepted: 0,
+      perType: {},
+      rejectedByReason: {}
+    };
+    // Pre-init reasons to avoid undefined
+    [RejectionReason.MISSING_ORIGIN, RejectionReason.UNTRUSTED_PACKAGE, RejectionReason.USER_INPUT, RejectionReason.OTHER].forEach(r => {
+      stats.rejectedByReason[r] = 0;
+    });
+    return stats;
+  }
+
+  // --- Debug/Internal Helpers ---
+
+  getDebugInfo(): string[] {
+    if (!this.debugData) return ["No data fetched yet"];
+    const { stats, sumActiveFromTier1, sumEstimatedFromTier2, sumTotalCalories, avgBmrKcalDay, sumBasalUsed } = this.debugData;
+
+    const info = [
+      `Tier1 (Direct): ${sumActiveFromTier1.toFixed(1)} | Tier2 (Est): ${sumEstimatedFromTier2.toFixed(1)}`,
+      `Total Energy: ${sumTotalCalories.toFixed(1)} | Basal Used: ${sumBasalUsed.toFixed(1)}`,
+      `BMR: ${avgBmrKcalDay > 0 ? avgBmrKcalDay.toFixed(0) : 'MISSING'} kcal/day`
+    ];
+
+    const typeRows = Object.entries(stats.perType)
+      .map(([type, s]: [string, any]) => `${type}: ${s.accepted}/${s.read} OK`)
+      .join('\n• ');
+    info.push(`• ${typeRows}`);
+
+    const rejectedManual = stats.rejectedByReason?.[RejectionReason.USER_INPUT] || 0;
+    if (rejectedManual > 0) {
+      info.push(`⚠️ IGNORED: ${rejectedManual} manual/invalid records.`);
+    }
+
+    return info;
+  }
+
+  getDetailedHourlyDebug() { return this.debugData?.hourly || []; }
+  getIngestionAuditLog(): IngestionRecord[] { return this.debugData?.auditLog || []; }
+  setBypassManualFilter(bypass: boolean) { this.bypassManualFilter = bypass; }
+}
