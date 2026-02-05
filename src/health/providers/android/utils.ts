@@ -40,11 +40,20 @@ export function distributeRecordAcrossBuckets(
 
     if (isNaN(rStart) || isNaN(rEnd)) return;
 
-    const duration = Math.max(rEnd - rStart, 1); // min 1ms to avoid div by zero
+    const duration = rEnd - rStart;
 
     for (let i = 0; i < 24; i++) {
         const bStart = dayStart.getTime() + i * 3600000;
         const bEnd = bStart + 3600000;
+
+        if (duration === 0) {
+            // Point-in-time sample
+            if (rStart >= bStart && rStart < bEnd) {
+                (buckets[i] as any)[bucketKey] += totalValue;
+                if (onBucketTouch) onBucketTouch(i);
+            }
+            continue;
+        }
 
         const overlapStart = Math.max(rStart, bStart);
         const overlapEnd = Math.min(rEnd, bEnd);

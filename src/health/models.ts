@@ -27,4 +27,10 @@ export interface HealthProvider {
   ensurePermissions(): Promise<HealthState>;
   getDashboardMetrics(): Promise<DashboardMetrics>;
   getTodayHourlyPayload(): Promise<HourlyHealthPayload[]>;
+
+  // Debug & Config
+  getDebugInfo(): string[];
+  getDetailedHourlyDebug(): any[];
+  getIngestionAuditLog(): any[];
+  setBypassManualFilter(bypass: boolean): void;
 }

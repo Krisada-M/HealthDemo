@@ -58,10 +58,7 @@ const DebugGetDataScreen = () => {
 
       if (healthState === HealthState.READY) {
         const provider = HealthLayer.getProvider();
-        if (
-          Platform.OS === 'android' &&
-          provider instanceof AndroidHealthConnectProvider
-        ) {
+        if (provider) {
           provider.setBypassManualFilter(allowManual);
         }
 
@@ -84,10 +81,7 @@ const DebugGetDataScreen = () => {
           lastUpdatedISO: new Date().toISOString(),
         });
 
-        if (
-          Platform.OS === 'android' &&
-          provider instanceof AndroidHealthConnectProvider
-        ) {
+        if (provider) {
           setDebugInfo(provider.getDebugInfo());
           setDetailedHourly(provider.getDetailedHourlyDebug());
           setAuditLog(provider.getIngestionAuditLog());
