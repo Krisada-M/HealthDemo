@@ -3,10 +3,7 @@ import { HealthState, DashboardMetrics, HourlyHealthPayload, HealthProvider } fr
 import { IosHealthKitProvider } from './providers/iosHealthKit';
 import { AndroidHealthConnectProvider } from './providers/androidHealthConnect';
 
-/**
- * HealthLayer - Unified Service for Health Data
- * Manages provider lifecycle and cross-platform permissions.
- */
+
 class HealthLayerManager {
   private provider: HealthProvider | null = null;
   private state: HealthState = HealthState.NOT_SUPPORTED;
@@ -23,10 +20,7 @@ class HealthLayerManager {
     }
   }
 
-  /**
-   * Ensures permissions are granted.
-   * Returns the current HealthState.
-   */
+
   async ensurePermissions(): Promise<HealthState> {
     if (!this.provider) {
       this.state = HealthState.NOT_SUPPORTED;
@@ -37,25 +31,19 @@ class HealthLayerManager {
     return this.state;
   }
 
-  /**
-   * Fetches high-level metrics for the dashboard.
-   */
+
   async getDashboardMetrics(): Promise<DashboardMetrics> {
     this.ensureReady();
     return this.provider!.getDashboardMetrics();
   }
 
-  /**
-   * Fetches hourly data for the current day.
-   */
+
   async getTodayHourlyPayload(): Promise<HourlyHealthPayload[]> {
     this.ensureReady();
     return this.provider!.getTodayHourlyPayload();
   }
 
-  /**
-   * Returns the active platform provider instance.
-   */
+
   getProvider() {
     return this.provider;
   }
@@ -67,5 +55,5 @@ class HealthLayerManager {
   }
 }
 
-// Single instance export
+
 export const HealthLayer = new HealthLayerManager();

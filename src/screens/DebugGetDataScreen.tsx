@@ -15,7 +15,6 @@ import {
   DashboardMetrics,
   HourlyHealthPayload,
 } from '../health/models';
-import { AndroidHealthConnectProvider } from '../health/providers/androidHealthConnect';
 import { MetricCard } from '../components/debug/MetricCard';
 import { AuditLog } from '../components/debug/AuditLog';
 import { StatsSummary } from '../components/debug/StatsSummary';

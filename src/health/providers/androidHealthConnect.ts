@@ -27,7 +27,6 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     this.debugData = null;
   }
 
-  // --- Public Interface ---
 
   async ensurePermissions(): Promise<HealthState> {
     try {
@@ -72,7 +71,6 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     const { start, end } = getDayBoundaries();
     const buckets = createEmptyHourlyBuckets();
 
-    // 1. Setup local state
     const auditLog: IngestionRecord[] = [];
     const stats: FilteringStats = this.initStats();
     const hourlyDetails: HourlyDetail[] = buckets.map((_, i) => ({
@@ -85,10 +83,8 @@ export class AndroidHealthConnectProvider implements HealthProvider {
       basalUsed: 0
     }));
 
-    // 2. Fetch
     const data = await this.fetchAllData(start, end);
 
-    // 3. Filter and Track
     const trusted = {
       steps: this.filterAndTrack(data.steps.records, 'Steps', stats, auditLog),
       distance: this.filterAndTrack(data.distance.records, 'Distance', stats, auditLog),
@@ -97,16 +93,12 @@ export class AndroidHealthConnectProvider implements HealthProvider {
       bmr: this.filterAndTrack(data.bmr.records, 'BMR', stats, auditLog),
     };
 
-    // 4. BMR
     const avgBmrKcalDay = calculateAverageBmr(trusted.bmr);
 
-    // 5. Populate Buckets with Overlap Distribution
     this.populateMetricsIntoBuckets(buckets, hourlyDetails, trusted);
 
-    // 6. Apply Mid-tier/Fallbacks
     const calculationResults = this.applyFallbacks(buckets, hourlyDetails, trusted.total, avgBmrKcalDay);
 
-    // 7. Store debug state
     this.debugData = {
       hourly: hourlyDetails,
       avgBmrKcalDay,
@@ -118,7 +110,6 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     return buckets;
   }
 
-  // --- Private Helpers ---
 
   private async fetchAllData(start: Date, end: Date) {
     const timeFilter = { timeRangeFilter: { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() } };
@@ -152,7 +143,7 @@ export class AndroidHealthConnectProvider implements HealthProvider {
 
     return records.filter(r => {
       const validation = validateRecord(r, this.bypassManualFilter);
-      const originPackage = r.metadata?.dataOrigin || "unknown"; // Reached limit of specific package extraction
+      const originPackage = r.metadata?.dataOrigin || "unknown";
       const startTimeRaw = (r as any).startTime || (r as any).time;
 
       let timeLabel = "unknown";
@@ -194,17 +185,14 @@ export class AndroidHealthConnectProvider implements HealthProvider {
   private populateMetricsIntoBuckets(buckets: HourlyHealthPayload[], details: HourlyDetail[], trusted: any) {
     const { start: dayStart } = getDayBoundaries();
 
-    // Steps
     trusted.steps.forEach((r: any) => {
       distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.count, 'steps');
     });
 
-    // Distance
     trusted.distance.forEach((r: any) => {
       distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.distance.inMeters, 'distance');
     });
 
-    // Active Calories
     trusted.active.forEach((r: any) => {
       distributeRecordAcrossBuckets(r, buckets, dayStart, (rec) => rec.energy.inKilocalories, 'activeCalories', (idx) => {
         details[idx].activeCaloriesSource = "activeRecord";
@@ -221,7 +209,6 @@ export class AndroidHealthConnectProvider implements HealthProvider {
     let sumTotalCalories = 0;
     let sumBasalUsed = 0;
 
-    // First distribute Total Calories into details for fallback analysis
     trustedTotal.forEach((r: any) => {
       const startStr = r.startTime || r.time;
       const endStr = r.endTime || r.startTime || r.time;
@@ -246,12 +233,10 @@ export class AndroidHealthConnectProvider implements HealthProvider {
       sumTotalCalories += hourTotalCal;
 
       if (details[i].hasActiveRecord) {
-        // Tier 1: Won't be overridden even if value is 0
         sumActiveFromTier1 += buckets[i].activeCalories;
         details[i].activeCalories = buckets[i].activeCalories;
       } else if (hourTotalCal > 0 && avgBmr > 0) {
-        // Tier 2: Only runs if no Tier 1 record exists
-        const bucketDurationMs = 3600000; // Fixed 1h for now, can be adjusted
+        const bucketDurationMs = 3600000;
         const basalHour = avgBmr * (bucketDurationMs / 86400000);
         const activeEst = Math.max(hourTotalCal - basalHour, 0);
 
@@ -280,14 +265,12 @@ export class AndroidHealthConnectProvider implements HealthProvider {
       perType: {},
       rejectedByReason: {}
     };
-    // Pre-init reasons to avoid undefined
     [RejectionReason.MISSING_ORIGIN, RejectionReason.UNTRUSTED_PACKAGE, RejectionReason.USER_INPUT, RejectionReason.OTHER].forEach(r => {
       stats.rejectedByReason[r] = 0;
     });
     return stats;
   }
 
-  // --- Debug/Internal Helpers ---
 
   getDebugInfo(): string[] {
     if (!this.debugData) return ["No data fetched yet"];

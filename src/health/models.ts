@@ -19,8 +19,8 @@ export type HourlyHealthPayload = {
   activeCaloriesUnit: 'kcal';
   distance: number;
   distanceUnit: 'm';
-  startDate: string; // ISO 8601 with timezone
-  endDate: string;   // ISO 8601 with timezone
+  startDate: string;
+  endDate: string;
 };
 
 export interface HealthProvider {
@@ -28,7 +28,6 @@ export interface HealthProvider {
   getDashboardMetrics(): Promise<DashboardMetrics>;
   getTodayHourlyPayload(): Promise<HourlyHealthPayload[]>;
 
-  // Debug & Config
   getDebugInfo(): string[];
   getDetailedHourlyDebug(): any[];
   getIngestionAuditLog(): any[];

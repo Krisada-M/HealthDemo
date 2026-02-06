@@ -19,7 +19,7 @@ export interface HourlyDetail {
     activeCalories: number;
     activeCaloriesSource: ActiveCaloriesSource;
     isEstimated: boolean;
-    hasActiveRecord: boolean; // Flag to prevent Tier-2 override
+    hasActiveRecord: boolean; 
     totalCalories?: number;
     basalUsed?: number;
 }

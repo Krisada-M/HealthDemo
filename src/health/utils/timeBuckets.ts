@@ -1,9 +1,5 @@
 import { HourlyHealthPayload } from '../models';
 
-/**
- * Formats a Date object to a local ISO 8601 string with timezone offset.
- * Example: 2024-05-15T14:00:00.000+07:00
- */
 export const toLocalISOString = (date: Date): string => {
   const tzo = -date.getTimezoneOffset();
   const dif = tzo >= 0 ? '+' : '-';

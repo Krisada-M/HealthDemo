@@ -1,9 +1,6 @@
 import { QuantitySample } from '@kingstinct/react-native-healthkit';
 import { HourlyHealthPayload } from '../../models';
 
-/**
- * Distributes a sample's value across hourly buckets based on time overlap.
- */
 export function distributeSample(
     sample: QuantitySample,
     buckets: HourlyHealthPayload[],
@@ -21,7 +18,7 @@ export function distributeSample(
         const bEnd = bStart + 3600000;
 
         if (duration === 0) {
-            // Point-in-time sample
+            
             if (rStart >= bStart && rStart < bEnd) {
                 (buckets[i] as any)[bucketKey] += totalValue;
                 if (onBucketTouch) onBucketTouch(i);

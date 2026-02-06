@@ -1,8 +1,5 @@
 import { HourlyHealthPayload } from '../../models';
 
-/**
- * Extracts numeric value from various Health Connect record types
- */
 export function extractValue(r: any): number {
     if (r.count) return r.count;
     if (r.energy?.inKilocalories) return r.energy.inKilocalories;
@@ -11,18 +8,12 @@ export function extractValue(r: any): number {
     return 0;
 }
 
-/**
- * Calculates average BMR from trusted records
- */
 export function calculateAverageBmr(trustedBmr: any[]): number {
     if (trustedBmr.length === 0) return 0;
     const sum = trustedBmr.reduce((acc, r) => acc + r.basalMetabolicRate.inKilocaloriesPerDay, 0);
     return sum / trustedBmr.length;
 }
 
-/**
- * Distributes a record's value across hourly buckets based on time overlap.
- */
 export function distributeRecordAcrossBuckets(
     record: any,
     buckets: HourlyHealthPayload[],
@@ -47,7 +38,6 @@ export function distributeRecordAcrossBuckets(
         const bEnd = bStart + 3600000;
 
         if (duration === 0) {
-            // Point-in-time sample
             if (rStart >= bStart && rStart < bEnd) {
                 (buckets[i] as any)[bucketKey] += totalValue;
                 if (onBucketTouch) onBucketTouch(i);

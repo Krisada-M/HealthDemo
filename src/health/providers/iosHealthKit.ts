@@ -54,14 +54,14 @@ export class IosHealthKitProvider implements HealthProvider {
     const { start, end } = getDayBoundaries();
     const buckets = createEmptyHourlyBuckets();
 
-    // 1. Setup local state
+    
     const auditLog: IngestionRecord[] = [];
     const hourlyDetails: HourlyDetail[] = buckets.map((_, i) => ({
       hourIndex: i, activeCalories: 0, activeCaloriesSource: "none", isEstimated: false
     }));
     const stats = { read: 0, accepted: 0, rejectedManual: 0 };
 
-    // 2. Query Data
+    
     const [steps, calories, distance] = await Promise.all([
       HealthKit.queryQuantitySamples('HKQuantityTypeIdentifierStepCount', {
         limit: -1,
@@ -83,14 +83,14 @@ export class IosHealthKitProvider implements HealthProvider {
       }),
     ]);
 
-    // 3. Process & Filter
+    
     this.processSamples(steps, 'Steps', 'count', buckets, hourlyDetails, auditLog, stats, 'steps');
     this.processSamples(calories, 'ActiveCal', 'kcal', buckets, hourlyDetails, auditLog, stats, 'activeCalories', (idx) => {
       hourlyDetails[idx].activeCaloriesSource = "activeRecord";
     });
     this.processSamples(distance, 'Distance', 'm', buckets, hourlyDetails, auditLog, stats, 'distance');
 
-    // 4. Store debug state
+    
     this.debugData = { hourly: hourlyDetails, stats, auditLog };
 
     return buckets;
@@ -136,7 +136,7 @@ export class IosHealthKitProvider implements HealthProvider {
     });
   }
 
-  // --- Debug Interface ---
+  
 
   getDebugInfo(): string[] {
     if (!this.debugData) return ["No data fetched yet"];
